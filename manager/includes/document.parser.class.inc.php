@@ -846,9 +846,8 @@ class DocumentParser {
      * @return string
      */
     function mergeDocumentContent($content) {
-        if (strpos($content, '[*') === false)
-            return $content;
         if(!isset($this->documentIdentifier)) return $content;
+        if(strpos($content,'[*')===false) return $content;
         if(!isset($this->documentObject) || empty($this->documentObject)) return $content;
         
         $matches = $this->getTagsFromContent($content,'[*','*]');
@@ -856,6 +855,11 @@ class DocumentParser {
         
         foreach($matches[1] as $i=>$key) {
             if(substr($key, 0, 1) == '#') $key = substr($key, 1); // remove # for QuickEdit format
+            
+            if(strpos($key,':')!==false)
+                list($key,$modifiers) = explode(':', $key, 2);
+            else $modifiers = false;
+            
             if(strpos($key,'@')!==false) {
                 list($key,$str) = explode('@',$key,2);
                 $context = strtolower($str);
@@ -903,6 +907,11 @@ class DocumentParser {
                 include_once(MODX_MANAGER_PATH . 'includes/tmplvars.commands.inc.php');
                 $value = getTVDisplayFormat($value[0], $value[1], $value[2], $value[3], $value[4]);
             }
+            
+            if($modifiers!==false) {
+                if(!class_exists('PHx')) $this->loadExtension('modifier');
+                $value = $this->filter->phxFilter($key,$value,$modifiers);
+            }
             $content= str_replace($matches['0'][$i], $value, $content);
         }
         
@@ -916,20 +925,34 @@ class DocumentParser {
      * @return string
      */
     function mergeSettingsContent($content) {
-        if (strpos($content, '[(') === false)
-			return $content;
-		$replace = array();
-		$matches = $this->getTagsFromContent($content, '[(', ')]');
-		if ($matches) {
-			for ($i = 0; $i < count($matches[1]); $i++) {
-				if ($matches[1][$i] && array_key_exists($matches[1][$i], $this->config))
-					$replace[$i] = $this->config[$matches[1][$i]];
-			}
-
-			$content = str_replace($matches[0], $replace, $content);
-		}
-		return $content;
-	}
+        if(strpos($content,'[(')===false) return $content;
+        
+        $matches = $this->getTagsFromContent($content,'[(',')]');
+        if(!$matches) return $content;
+        
+        $replace= array ();
+        foreach($matches[1] as $i=>$key) {
+            if(strpos($key,':')!==false)
+                list($key,$modifiers) = explode(':', $key, 2);
+            else $modifiers = false;
+            
+            if(isset($this->config[$key]))
+            {
+                
+                $value = $this->config[$key];
+                if($modifiers!==false) {
+                    if(!class_exists('PHx')) $this->loadExtension('modifier');
+                    $value = $this->filter->phxFilter($key,$value,$modifiers);
+                }
+                
+                $replace[$i]= $value;
+            }
+            else $replace[$i]= $key;
+        }
+        
+        $content= str_replace($matches[0], $replace, $content);
+        return $content;
+    }
 
 	/**
      * Merge chunks
@@ -938,32 +961,29 @@ class DocumentParser {
      * @return string
      */
     function mergeChunkContent($content) {
-		if (strpos($content, '{{') === false)
-			return $content;
-		$replace = array();
-		$matches = $this->getTagsFromContent($content, '{{', '}}');
-		if ($matches) {
-			for ($i = 0; $i < count($matches[1]); $i++) {
-				if ($matches[1][$i]) {
-					if (isset($this->chunkCache[$matches[1][$i]])) {
-						$replace[$i] = $this->chunkCache[$matches[1][$i]];
-					} else {
-						$result = $this->db->select('snippet', $this->getFullTableName('site_htmlsnippets'), "name='".$this->db->escape($matches[1][$i])."'");
-						if ($snippet = $this->db->getValue($result)) {
-							$this->chunkCache[$matches[1][$i]] = $snippet;
-							$replace[$i] = $snippet;
-						} else {
-							$this->chunkCache[$matches[1][$i]] = '';
-							$replace[$i] = '';
-						}
-					}
-				}
-			}
-			$content = str_replace($matches[0], $replace, $content);
-			$content = $this->mergeSettingsContent($content);
-		}
-		return $content;
-	}
+        if(strpos($content,'{{')===false) return $content;
+        
+        $matches = $this->getTagsFromContent($content,'{{','}}');
+        if(!$matches) return $content;
+        
+        $replace= array ();
+        foreach($matches[1] as $i=>$key) {
+            if(strpos($key,':')!==false)
+                list($key,$modifiers) = explode(':', $key, 2);
+            else $modifiers = false;
+            
+            $value= $this->getChunk($key);
+            
+            if($modifiers!==false) {
+                if(!class_exists('PHx')) $this->loadExtension('modifier');
+                $value = $this->filter->phxFilter($key,$value,$modifiers);
+            }
+            $replace[$i] = $value;
+        }
+        
+        $content= str_replace($matches[0], $replace, $content);
+        return $content;
+    }
 
     /**
      * Merge placeholder values
@@ -972,26 +992,31 @@ class DocumentParser {
      * @return string
      */
     function mergePlaceholderContent($content) {
-		if (strpos($content, '[+') === false)
-			return $content;
-		$replace = array();
-		$content = $this->mergeSettingsContent($content);
-		$matches = $this->getTagsFromContent($content, '[+', '+]');
-		if ($matches) {
-			for ($i = 0; $i < count($matches[1]); $i++) {
-				$v = '';
-				$key = $matches[1][$i];
-				if ($key && is_array($this->placeholders) && array_key_exists($key, $this->placeholders))
-					$v = $this->placeholders[$key];
-				if ($v === '')
-					unset($matches[0][$i]); // here we'll leave empty placeholders for last.
-				else
-					$replace[$i] = $v;
-			}
-			$content = str_replace($matches[0], $replace, $content);
-		}
-		return $content;
-	}
+        if(strpos($content,'[+')===false) return $content;
+        if(!is_array($this->placeholders)) return $content;
+        
+        $content=$this->mergeSettingsContent($content);
+        $matches = $this->getTagsFromContent($content,'[+','+]');
+        if(!$matches) return $content;
+        foreach($matches[1] as $i=>$key) {
+            if(strpos($key,':')!==false)
+                list($key,$modifiers) = explode(':', $key, 2);
+            else $modifiers = false;
+            
+            if (isset($this->placeholders[$key])) $value = $this->placeholders[$key];
+            elseif($key==='modifier') $value = '';
+            else continue;
+            
+            if($modifiers!==false)
+            {
+                if(!class_exists('PHx')) $this->loadExtension('modifier');
+                $modifiers = $this->mergePlaceholderContent($modifiers);
+                $value = $this->filter->phxFilter($key,$value,$modifiers);
+            }
+            $content= str_replace($matches[0][$i], $value, $content);
+        }
+        return $content;
+    }
 
 	/**
 	 * Detect PHP error according to MODX error level
@@ -1084,8 +1109,7 @@ class DocumentParser {
      * @param string $documentSource
      * @return string
      */
-    function evalSnippets($content)
-    {
+    function evalSnippets($content,$nest=0) {
         if(strpos($content,'[[')===false) return $content;
         
         $etomite= & $this;
@@ -1097,6 +1121,20 @@ class DocumentParser {
         $replace= array ();
         foreach($matches[1] as $i=>$value)
         {
+            if(substr($value,0,2)==='$_')
+            {
+                $key = $value;
+                if(strpos($key,':')!==false)
+                    list($key,$modifiers) = explode(':', $key, 2);
+                else $modifiers = false;
+                if($modifiers!==false)
+                {
+                    if(!class_exists('PHx')) $this->loadExtension('modifier');
+                    $value = $this->filter->phxFilter($key,$value,$modifiers);
+                }
+                $replace[$i] = $value;
+                continue;
+            }
             foreach($matches[0] as $find=>$tag)
             {
                 if(isset($replace[$find]) && strpos($value,$tag)!==false)
@@ -1107,14 +1145,20 @@ class DocumentParser {
             }
             $replace[$i] = $this->_get_snip_result($value);
         }
-        $content = str_replace($matches['0'], $replace, $content);
+        $content = str_replace($matches[0], $replace, $content);
         return $content;
     }
     
-    private function _get_snip_result($piece)
-    {
+    private function _get_snip_result($piece) {
         $snip_call = $this->_split_snip_call($piece);
         $snip_name = $snip_call['name'];
+        
+        if(strpos($snip_name,':')!==false)
+        {
+            list($snip_name,$modifiers) = explode(':', $snip_name, 2);
+            $snip_call['name'] = $snip_name;
+        }
+        else $modifiers = false;
         
         $snippetObject = $this->_getSnippetObject($snip_call['name']);
         $this->currentSnippet = $snippetObject['name'];
@@ -1129,6 +1173,11 @@ class DocumentParser {
         }
         
         $value = $this->evalSnippet($snippetObject['content'], $params);
+        if($modifiers!==false)
+        {
+            if(!class_exists('PHx')) $this->loadExtension('modifier');
+            $value = $this->filter->phxFilter($snip_name,$value,$modifiers);
+        }
         
         if($this->dumpSnippets)
         {
@@ -2580,17 +2629,48 @@ class DocumentParser {
      * 
      * @return {string} - Parsed text.
      */
-	function parseText($chunk, $chunkArr, $prefix = '[+', $suffix = '+]'){
-		if (!is_array($chunkArr)){
-			return $chunk;
-		}
-		
-		foreach ($chunkArr as $key => $value){
-			$chunk = str_replace($prefix.$key.$suffix, $value, $chunk);
-		}
-		
-		return $chunk;
-	}
+    function parseText($content='', $ph=array(), $left= '[+', $right= '+]',$cleanup=true) {
+        if(is_array($content)&&is_string($ph)) {list($ph,$content) = array($content,$ph);}
+        
+        if(!$ph) return $content;
+        if(strpos($content,$left)===false) return $content;
+        elseif(is_string($ph) && strpos($ph,'='))
+        {
+            if(strpos($ph,',')) $pairs   = explode(',',$ph);
+            else                $pairs[] = $ph;
+            
+            unset($ph);
+            $ph = array();
+            foreach($pairs as $pair)
+            {
+                list($k,$v) = explode('=',trim($pair));
+                $ph[$k] = $v;
+            }
+        }
+        $matches = $this->getTagsFromContent($content,$left,$right);
+        if(!$matches) return $content;
+        $replace= array ();
+        foreach($matches[1] as $i=>$key) {
+            if(strpos($key,':')!==false)
+                list($key,$modifiers) = explode(':', $key, 2);
+            else $modifiers = false;
+            
+            if(isset($ph[$key]))
+            {
+                $value = $ph[$key];
+                if($modifiers!==false)
+                {
+                    if(!class_exists('PHx')) $this->loadExtension('modifier');
+                    $value = $this->filter->phxFilter($key,$value,$modifiers);
+                }
+                $replace[$i]= $value;
+            }
+            elseif($cleanup) $replace[$i] = '';
+            else             $replace[$i] = $matches[0][$i];
+        }
+        $content= str_replace($matches[0], $replace, $content);
+        return $content;
+    }
 	
 	/**
 	 * parseChunk
